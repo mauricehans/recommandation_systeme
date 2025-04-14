@@ -1,56 +1,80 @@
-from flask import Flask, request, jsonify
-from recommender.database import engine, get_db, Base
-from recommender.models import User, Product, Interaction
-from recommender.recommender import RecommendationSystem
-from sqlalchemy.orm import Session
+import streamlit as st
+import pandas as pd
+from recommender.recommender import ProductRecommender
+from recommender.database import get_db
 
-app = Flask(__name__)
+# Initialisation du système de recommandation avec la connexion à la base de données
+db = next(get_db())
+recommender = ProductRecommender(db=db)
 
-# Créer les tables dans la base de données
-Base.metadata.create_all(bind=engine)
+# Configuration de la page Streamlit
+st.set_page_config(
+    page_title="Système de Recommandation de Produits",
+    layout="wide"
+)
 
-@app.route('/recommendations/<int:user_id>', methods=['GET'])
-def get_recommendations(user_id):
-    db = next(get_db())
-    recommender = RecommendationSystem(db)
-    num_recs = request.args.get('num', default=5, type=int)
-    recommendations = recommender.recommend_for_user(user_id, num_recommendations=num_recs)
-    return jsonify(recommendations)
+# Titre principal
+st.title("Système de Recommandation de Produits")
 
-@app.route('/users', methods=['POST'])
-def create_user():
-    data = request.json
-    db = next(get_db())
-    user = User(username=data['username'])
-    db.add(user)
-    db.commit()
-    db.refresh(user)
-    return jsonify({"id": user.id, "username": user.username})
+# Création de deux colonnes pour l'interface
+col1, col2 = st.columns(2)
 
-@app.route('/products', methods=['POST'])
-def create_product():
-    data = request.json
-    db = next(get_db())
-    product = Product(name=data['name'], category=data['category'])
-    db.add(product)
-    db.commit()
-    db.refresh(product)
-    return jsonify({"id": product.id, "name": product.name, "category": product.category})
+with col1:
+    st.header("Recherche de Produits")
+    
+    # Sélection d'un produit unique
+    product_id = st.number_input("Entrez l'ID du produit", min_value=1, value=1)
+    
+    if st.button("Obtenir les recommandations"):
+        # Obtention des recommandations
+        recommendations = recommender.get_frequently_bought_together(product_id)
+        
+        if recommendations:
+            st.subheader("Produits fréquemment achetés ensemble")
+            df = pd.DataFrame(recommendations)
+            st.dataframe(df)
+            
+            # Création d'un graphique de score
+            st.bar_chart(df.set_index('item_id')['score'])
+        else:
+            st.info("Aucune recommandation trouvée pour ce produit.")
 
-@app.route('/interactions', methods=['POST'])
-def create_interaction():
-    data = request.json
-    db = next(get_db())
-    interaction = Interaction(
-        user_id=data['user_id'],
-        product_id=data['product_id'],
-        rating=data['rating']
+with col2:
+    st.header("Recommandations Multi-Produits")
+    
+    # Sélection multiple de produits
+    product_ids_input = st.text_input(
+        "Entrez plusieurs IDs de produits (séparés par des virgules)",
+        "1,2,3"
     )
-    db.add(interaction)
-    db.commit()
-    db.refresh(interaction)
-    return jsonify({"id": interaction.id, "user_id": interaction.user_id, 
-                   "product_id": interaction.product_id, "rating": interaction.rating})
+    
+    if st.button("Obtenir les recommandations combinées"):
+        try:
+            # Conversion de l'entrée en liste d'entiers
+            product_ids = [int(id.strip()) for id in product_ids_input.split(',')]
+            
+            # Obtention des recommandations pour plusieurs produits
+            multi_recommendations = recommender.recommend_for_products(product_ids)
+            
+            if multi_recommendations:
+                st.subheader("Recommandations basées sur plusieurs produits")
+                df_multi = pd.DataFrame(multi_recommendations)
+                st.dataframe(df_multi)
+                
+                # Création d'un graphique de score
+                st.bar_chart(df_multi.set_index('item_id')['score'])
+            else:
+                st.info("Aucune recommandation trouvée pour cette combinaison de produits.")
+        except ValueError:
+            st.error("Veuillez entrer des IDs de produits valides.")
 
-if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=8000, debug=True)
+# Affichage des informations sur le système
+st.sidebar.title("À propos")
+st.sidebar.info("""
+    Ce système de recommandation utilise l'historique des achats pour suggérer des produits
+    pertinents basés sur les comportements d'achat des utilisateurs.
+    
+    Les recommandations sont calculées en utilisant :
+    - Les produits fréquemment achetés ensemble
+    - Les tendances d'achat des 30 derniers jours
+""")
